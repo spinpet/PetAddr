@@ -82,12 +82,29 @@ impl PetGenerator {
         let (tx, mut rx) = mpsc::channel(count);
         
         // Spawn generation tasks
-        for _ in 0..count {
+        for i in 0..count {
             let tx = tx.clone();
             tokio::spawn(async move {
-                if let Some(address) = PetAddress::generate() {
-                    if tx.send(address).await.is_err() {
-                        warn!("Failed to send generated address to channel");
+                info!("Starting generation task {}", i + 1);
+                
+                // Retry up to 3 times if generation fails
+                for retry in 1..=3 {
+                    match PetAddress::generate() {
+                        Some(address) => {
+                            info!("Generated Pet address ending with: {}", 
+                                  &address.address[address.address.len().saturating_sub(10)..]);
+                            if tx.send(address).await.is_err() {
+                                warn!("Failed to send generated address to channel");
+                            }
+                            break; // Success, exit retry loop
+                        }
+                        None => {
+                            warn!("Failed to generate Pet address in task {} (attempt {}/3)", i + 1, retry);
+                            if retry < 3 {
+                                // Wait a bit before retrying
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        }
                     }
                 }
             });
@@ -95,13 +112,21 @@ impl PetGenerator {
         
         drop(tx); // Close the sender
         
-        // Collect generated addresses
+        // Collect generated addresses with timeout
         let mut generated_count = 0;
+        let timeout_duration = Duration::from_secs(30); // 30 second timeout per batch
+        let start_time = std::time::Instant::now();
+        
         while let Some(address) = rx.recv().await {
+            if start_time.elapsed() > timeout_duration {
+                warn!("Batch generation timed out after 30 seconds");
+                break;
+            }
+            
             match storage.store_address(address) {
                 Ok(id) => {
                     generated_count += 1;
-                    info!("Generated Pet address with ID: {}", id);
+                    info!("Stored Pet address with ID: {}", id);
                 }
                 Err(e) => {
                     error!("Failed to store Pet address: {}", e);
@@ -109,7 +134,7 @@ impl PetGenerator {
             }
         }
         
-        info!("Generated {} Pet addresses in batch", generated_count);
+        info!("Generated and stored {} Pet addresses in batch", generated_count);
     }
     
     pub async fn get_current_count(&self) -> Result<usize> {
