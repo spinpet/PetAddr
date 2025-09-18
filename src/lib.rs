@@ -76,16 +76,12 @@ pub async fn create_app(config: AppConfig) -> anyhow::Result<(Router, Arc<PetGen
         config.rate_limit.window_seconds,
     );
     
-    let (base_routes, pet_routes) = create_routes(&config);
+    let (base_routes, pet_routes, pet_status_routes) = create_routes(&config);
     
     let mut app = Router::new()
         .merge(base_routes)
-        .merge(
-            pet_routes
-                .with_state(pet_state)
-                .layer(Extension(rate_limiter))
-                .layer(axum::middleware::from_fn(rate_limit_middleware))
-        );
+        .merge(pet_status_routes.with_state(Arc::clone(&pet_state)))
+        .merge(pet_routes.with_state(pet_state));
 
     // Add Swagger UI if enabled
     if config.swagger.enabled {
